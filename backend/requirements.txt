@@ -1,0 +1,13 @@
+Django>=5.0,<5.2
+djangorestframework
+dj-database-url
+psycopg[binary]
+gunicorn
+python-telegram-bot
+requests
+python-dotenv
+django-cors-headers
+whitenoise
+pywebpush
+openpyxl
+groq

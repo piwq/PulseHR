@@ -1,0 +1,84 @@
+# PulseHR — локальный демо-стек (Фаза 0).
+# Один образ backend крутит core/insights/bot — разница только в command.
+# Миграции гоняет ТОЛЬКО core (идемпотентно, один раз).
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pulse
+      POSTGRES_PASSWORD: pulse
+      POSTGRES_DB: pulse
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulse"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  core:
+    build: ./backend
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    # Миграции закоммичены в репо → детерминированный migrate (без рантайм-makemigrations).
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             (python manage.py createsuperuser --noinput || true) &&
+             python manage.py collectstatic --noinput &&
+             gunicorn config.wsgi:application -b 0.0.0.0:8000 --workers 2"
+    healthcheck:
+      # публичный эндпоинт (200); /api/surveys/ теперь требует роль HR.
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/notifications/vapid-public-key')\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  insights:
+    build: ./backend
+    env_file: .env
+    depends_on:
+      core:
+        condition: service_healthy
+    # gthread, не sync: sync-воркер рвёт SSE по --timeout и занят целиком на каждое
+    # соединение. Потоки держат много открытых стримов на малом числе воркеров.
+    command: >
+      sh -c "gunicorn config.wsgi:application --worker-class gthread --threads 8 --workers 2 --timeout 120 --bind 0.0.0.0:8000"
+
+  bot:
+    build: ./backend
+    env_file: .env
+    depends_on:
+      core:
+        condition: service_healthy
+    command: >
+      sh -c "python manage.py run_bot"
+
+  dispatcher:
+    build: ./backend
+    env_file: .env
+    depends_on:
+      core:
+        condition: service_healthy
+    # Каскадная рассылка уведомлений (DB-воркер, без Celery/Redis).
+    command: >
+      sh -c "python manage.py run_dispatcher"
+
+  frontend:
+    build: ./frontend
+
+  nginx:
+    image: nginx:alpine
+    depends_on:
+      - core
+      - insights
+      - frontend
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+
+volumes:
+  pgdata:
