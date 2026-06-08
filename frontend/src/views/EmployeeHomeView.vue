@@ -25,13 +25,11 @@ const profileName = ref(auth.employee?.name || '')
 const profileDept = ref(auth.employee?.department || '')
 const profileDepts = ref([])
 const profileSaving = ref(false)
-const profileDone = ref(!!auth.employee?.department)
+const profileOpen = ref(!auth.employee?.department)
 
 onMounted(async () => {
   load()
-  if (!profileDone.value) {
-    try { profileDepts.value = await api('/auth/departments') } catch { /* ignore */ }
-  }
+  try { profileDepts.value = await api('/auth/departments') } catch { /* ignore */ }
 })
 
 async function load() {
@@ -45,7 +43,6 @@ async function load() {
 }
 
 async function saveProfile() {
-  if (!profileName.value.trim() && !profileDept.value.trim()) return
   profileSaving.value = true
   try {
     const updated = await api('/auth/me', {
@@ -53,7 +50,7 @@ async function saveProfile() {
       body: { name: profileName.value.trim(), department: profileDept.value.trim() },
     })
     auth.employee = updated
-    profileDone.value = true
+    profileOpen.value = false
   } finally {
     profileSaving.value = false
   }
@@ -104,25 +101,26 @@ function logout() { auth.logout(); router.push('/login') }
       </div>
     </header>
 
-    <!-- Заполнение профиля (показывается если нет отдела) -->
-    <PhCard v-if="!profileDone" style="margin-bottom:16px;border:1px solid var(--accent-soft)">
-      <div style="display:flex;gap:14px;align-items:flex-start">
-        <div style="margin-top:2px;color:var(--accent-text)"><PhIcon name="user" :size="20" /></div>
-        <div style="flex:1">
-          <div class="h3" style="font-size:15px;margin-bottom:4px">Заполните профиль</div>
-          <p class="sm muted" style="margin-bottom:12px">Укажите имя и отдел — HR-аналитика учитывает разбивку по командам.</p>
-          <div style="display:flex;flex-direction:column;gap:8px">
-            <input class="input" v-model="profileName" placeholder="Ваше имя" style="font-size:14px" />
-            <select class="select" v-model="profileDept" style="font-size:14px">
-              <option value="">— выберите или введите ниже —</option>
-              <option v-for="d in profileDepts" :key="d" :value="d">{{ d }}</option>
-            </select>
-            <input class="input" v-model="profileDept" placeholder="Или введите отдел вручную" style="font-size:14px" />
-          </div>
-          <PhButton variant="primary" style="margin-top:12px" :disabled="profileSaving" @click="saveProfile">
-            {{ profileSaving ? 'Сохранение…' : 'Сохранить' }}
-          </PhButton>
+    <!-- Профиль (всегда виден; при первом входе — развёрнут) -->
+    <PhCard style="margin-bottom:16px" :style="!auth.employee?.department ? 'border:1px solid var(--accent-soft)' : ''">
+      <div style="display:flex;align-items:center;gap:12px;cursor:pointer" @click="profileOpen = !profileOpen">
+        <div style="color:var(--accent-text)"><PhIcon name="user" :size="18" /></div>
+        <div style="flex:1;min-width:0">
+          <div class="sm" style="font-weight:600">{{ auth.employee?.name || auth.employee?.phone }}</div>
+          <div class="xs muted">{{ auth.employee?.department || 'без отдела' }}</div>
         </div>
+        <PhIcon name="arrow" :size="13" :style="{ transform: profileOpen ? 'rotate(-90deg)' : 'rotate(90deg)', transition: 'transform .18s', color: 'var(--text-muted)' }" />
+      </div>
+      <div v-if="profileOpen" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px">
+        <input class="input" v-model="profileName" placeholder="Ваше имя" style="font-size:14px" />
+        <select v-if="profileDepts.length" class="select" v-model="profileDept" style="font-size:14px">
+          <option value="">— без отдела —</option>
+          <option v-for="d in profileDepts" :key="d" :value="d">{{ d }}</option>
+        </select>
+        <input v-else class="input" v-model="profileDept" placeholder="Отдел" style="font-size:14px" />
+        <PhButton variant="primary" :disabled="profileSaving" @click.stop="saveProfile">
+          {{ profileSaving ? 'Сохранение…' : 'Сохранить' }}
+        </PhButton>
       </div>
     </PhCard>
 

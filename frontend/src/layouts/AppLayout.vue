@@ -95,8 +95,8 @@ onBeforeUnmount(() => es && es.close())
         </template>
       </nav>
       <div class="sidebar__foot">
-        <div class="avatar">{{ auth.initials }}</div>
-        <div style="min-width:0;flex:1">
+        <div class="avatar" style="cursor:pointer" title="Мой профиль" @click="router.push('/profile')">{{ auth.initials }}</div>
+        <div style="min-width:0;flex:1;cursor:pointer" title="Мой профиль" @click="router.push('/profile')">
           <div class="sm" style="font-weight:600;white-space:nowrap">{{ auth.employee?.name || auth.employee?.phone }}</div>
           <div class="xs muted">HR-руководитель</div>
         </div>

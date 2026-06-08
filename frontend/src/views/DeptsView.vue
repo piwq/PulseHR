@@ -6,9 +6,13 @@ import PhEmptyState from '../components/ui/PhEmptyState.vue'
 import PhSparkline from '../components/charts/PhSparkline.vue'
 import PhModal from '../components/ui/PhModal.vue'
 import PhButton from '../components/ui/PhButton.vue'
+import { useRouter } from 'vue-router'
 import { api } from '../lib/api'
 import { sevLabel, sevColor } from '../lib/severity'
 import { useAppAction } from '../stores/useAppAction'
+
+const router = useRouter()
+function openDept(name) { router.push(`/depts/${encodeURIComponent(name)}`) }
 
 const analytics = ref(null)   // /surveys/dashboard/ — отделы с реальными данными
 const allDepts = ref([])      // /auth/departments — полный список отделов
@@ -89,11 +93,11 @@ async function createDept() {
     <table class="tbl">
       <thead>
         <tr>
-          <th>Отдел</th><th>Тренд</th><th>Вовлечённость</th><th>eNPS</th><th>Участие</th><th style="text-align:right">Статус</th>
+          <th>Отдел</th><th>Тренд</th><th style="text-align:right">Вовлечённость</th><th style="text-align:right">eNPS</th><th style="text-align:right">Участие</th><th style="text-align:right">Статус</th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="d in rows" :key="d.department">
+        <tr v-for="d in rows" :key="d.department" class="dept-row" @click="openDept(d.department)" title="Открыть отдел">
           <td style="font-weight:600">{{ d.department }}</td>
           <td>
             <PhSparkline v-if="d.trendVals.length > 1" :values="d.trendVals" :color="sevColor(d.sev)" />
@@ -135,3 +139,8 @@ async function createDept() {
     </template>
   </PhModal>
 </template>
+
+<style scoped>
+.dept-row { cursor: pointer; transition: background .1s; }
+.dept-row:hover { background: var(--bg-raised); }
+</style>

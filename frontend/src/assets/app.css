@@ -117,7 +117,7 @@
 .auth-quote { font-size: 19px; line-height: 1.5; font-weight: 500; max-width: 30ch; letter-spacing: -0.01em; }
 
 /* decorative pulse line in aside (resting state visible; draw is enhancement only) */
-.pulse-deco { position: absolute; left: 0; right: 0; bottom: 130px; opacity: 0.5; }
+.pulse-deco { display: block; width: 100%; opacity: 0.5; margin-bottom: 20px; }
 @media (prefers-reduced-motion: no-preference) {
   .pulse-deco path { stroke-dasharray: 1400; stroke-dashoffset: 1400; animation: drawPulse 3.2s var(--ease) forwards 0.3s; }
 }

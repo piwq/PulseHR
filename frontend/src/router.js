@@ -16,6 +16,8 @@ const routes = [
       { path: 'depts', name: 'depts', component: () => import('./views/DeptsView.vue'),
         meta: { title: 'Отделы', sub: 'Вовлечённость и eNPS по командам',
           action: { label: 'Новый отдел', icon: 'trend' } } },
+      { path: 'depts/:name', name: 'dept-detail', component: () => import('./views/DeptDetailView.vue'),
+        meta: { title: 'Отдел', sub: 'Состав и метрики команды', action: null } },
       { path: 'surveys', name: 'surveys', component: () => import('./views/SurveysView.vue'),
         meta: { title: 'Опросы', sub: 'Конструктор и статусы циклов',
           action: { label: 'Новый опрос', icon: 'survey', path: '/surveys/new' } } },
@@ -33,6 +35,8 @@ const routes = [
         meta: { title: 'ИИ-отчёт', sub: 'Сводка по опросу от ИИ', action: null } },
       { path: 'history', name: 'history', component: () => import('./views/HistoryView.vue'),
         meta: { title: 'История', sub: 'Прошлые циклы опросов', action: null } },
+      { path: 'profile', name: 'profile', component: () => import('./views/ProfileView.vue'),
+        meta: { title: 'Мой профиль', sub: 'Личные данные и настройки', action: null } },
     ],
   },
 
