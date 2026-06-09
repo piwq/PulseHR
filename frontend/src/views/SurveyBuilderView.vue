@@ -51,6 +51,7 @@ function toggleDept(d) {
   else { audienceDepts.value.push(d); audienceSearch.value = '' }
 }
 function removeDept(d) { audienceDepts.value = audienceDepts.value.filter(x => x !== d) }
+function closeAudience() { setTimeout(() => { audienceOpen.value = false }, 150) }
 function audienceKeydown(e) {
   if ((e.key === 'Enter' || e.key === ',') && audienceSearch.value.trim()) {
     e.preventDefault()
@@ -149,7 +150,7 @@ async function save(thenPublish = false) {
 </script>
 
 <template>
-  <div class="route" style="display:flex;flex-direction:column;gap:16px;max-width:760px">
+  <div class="route" style="display:flex;flex-direction:column;gap:16px;max-width:760px" @click="audienceOpen = false">
     <div>
       <button style="display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary);background:none;border:none;cursor:pointer;padding:0"
         @click="router.push('/surveys')">
@@ -176,7 +177,7 @@ async function save(thenPublish = false) {
           <PhField label="Аудитория" style="flex:1;min-width:200px">
             <div style="position:relative">
               <div class="input" style="display:flex;flex-wrap:wrap;gap:4px;height:auto;min-height:38px;padding:5px 10px;cursor:text;align-items:center"
-                @click="audienceOpen = true">
+                @click.stop="audienceOpen = true">
                 <span v-for="d in audienceDepts" :key="d"
                   style="display:inline-flex;align-items:center;gap:3px;background:var(--accent-soft);color:var(--accent-text);border-radius:4px;padding:2px 7px;font-size:12px;line-height:1.4">
                   {{ d }}
@@ -184,13 +185,14 @@ async function save(thenPublish = false) {
                     style="background:none;border:none;cursor:pointer;color:inherit;padding:0;font-size:14px;line-height:1;opacity:.7">×</button>
                 </span>
                 <input v-model="audienceSearch"
-                  @focus="audienceOpen = true" @blur="setTimeout(() => audienceOpen = false, 150)"
+                  @focus.stop="audienceOpen = true" @blur="closeAudience()"
                   @keydown="audienceKeydown"
                   :placeholder="audienceDepts.length ? '' : 'пусто = вся компания'"
                   style="border:none;background:none;outline:none;flex:1;min-width:80px;padding:0;color:var(--text);font-size:14px;font-family:inherit" />
               </div>
               <div v-if="audienceOpen && filteredDepts.length"
-                class="dropdown" style="top:calc(100% + 4px);left:0;right:0;max-height:180px;overflow-y:auto">
+                class="dropdown" style="top:calc(100% + 4px);left:0;right:0;max-height:180px;overflow-y:auto"
+                @click.stop>
                 <div v-for="d in filteredDepts" :key="d" class="dropdown__item"
                   @mousedown.prevent="toggleDept(d)">{{ d }}</div>
               </div>
