@@ -22,11 +22,13 @@ const NAV = [
   { id: 'dashboard', label: 'Дашборд', icon: 'grid', path: '/' },
   { id: 'depts', label: 'Отделы', icon: 'trend', path: '/depts' },
   { id: 'surveys', label: 'Опросы', icon: 'survey', path: '/surveys' },
+  { id: 'comparison', label: 'Сравнение волн', icon: 'clock', path: '/comparison' },
   { id: 'ai-report', label: 'ИИ-отчёт', icon: 'spark', path: '/ai-report' },
   { group: 'Команда' },
   { id: 'employees', label: 'Сотрудники', icon: 'user', path: '/employees' },
   { group: 'Сигналы' },
   { id: 'alerts', label: 'Алерты', icon: 'alert', path: '/alerts' },
+  { id: 'channels', label: 'Каналы', icon: 'bell', path: '/channels' },
   { id: 'history', label: 'История', icon: 'clock', path: '/history' },
 ]
 

@@ -1,10 +1,11 @@
-"""Демо-данные под новые модели (РАБОЧЕЕ).
+"""Демо-данные под модель волн (SurveyRun).
 
 Создаёт:
 - HR-аккаунт + сотрудников по отделам (для OTP-входа и % прохождения);
-- активный анонимный опрос с вопросами scale / NPS / single / text;
-- backdated анонимные ответы 3 волнами с падающим трендом «Продаж» (драматургия демо);
-- участия (Participation) части сотрудников для реального % прохождения.
+- один анонимный опрос вовлечённости с вопросами scale / NPS / single / text;
+- НЕСКОЛЬКО ВОЛН (запусков) с падающим трендом «Продаж» от волны к волне —
+  для сравнения во времени и дельты «к прошлой волне» (последняя волна — активная);
+- участия (Participation) per-run для реального % прохождения.
 
 Запуск: docker compose exec core python scripts/seed.py
 """
@@ -24,15 +25,23 @@ from django.utils import timezone  # noqa: E402
 
 from apps.accounts.models import Employee  # noqa: E402
 from apps.surveys.models import (Answer, Participation, Question,  # noqa: E402
-                                 Response, Survey)
+                                 Response, Survey, SurveyRun)
 
 DEPTS = ["Продажи", "Разработка", "Поддержка", "Маркетинг", "HR"]
-WAVES = 3
-WAVE_GAP_DAYS = 14
-RESP_PER_WAVE = 8           # >= гейта анонимности N>=5
+CITIES = ["Москва", "Санкт-Петербург", "Казань"]
+TITLES = {
+    "Продажи":    ["Менеджер по продажам", "Старший менеджер"],
+    "Разработка": ["Разработчик", "Тимлид"],
+    "Поддержка":  ["Специалист поддержки"],
+    "Маркетинг":  ["Маркетолог"],
+    "HR":         ["HR-менеджер"],
+}
+RUNS = 3                 # волны (запуски)
+RUN_GAP_DAYS = 90        # ~квартал между волнами
+RESP_PER_RUN = 8         # >= гейта анонимности N>=5
 EMP_PER_DEPT = 8
 
-# Падающая вовлечённость у «Продаж» по волнам (1–5).
+# Вовлечённость по отделам ОТ ВОЛНЫ К ВОЛНЕ (1–5). «Продажи» проседают — драматургия демо.
 ENG = {
     "Продажи":    [4.3, 3.4, 2.6],
     "Разработка": [4.1, 4.0, 4.2],
@@ -54,21 +63,26 @@ def run():
     )
     employees = {d: [] for d in DEPTS}
     for di, dept in enumerate(DEPTS):
+        titles = TITLES[dept]
         for i in range(EMP_PER_DEPT):
-            emp, _ = Employee.objects.get_or_create(
+            emp, created = Employee.objects.get_or_create(
                 phone=f"+7900{di}{i:03d}",
                 defaults={"name": f"{dept} {i+1}", "role": Employee.EMPLOYEE,
-                          "department": dept, "consent_at": timezone.now()},
+                          "department": dept, "city": CITIES[i % len(CITIES)],
+                          "job_title": titles[i % len(titles)], "consent_at": timezone.now()},
             )
+            if not created:
+                emp.city = CITIES[i % len(CITIES)]
+                emp.job_title = titles[i % len(titles)]
+                emp.save(update_fields=["city", "job_title"])
             employees[dept].append(emp)
 
-    # --- опрос ---
-    Survey.objects.filter(title="Пульс-опрос Q2").delete()
+    # --- опрос (определение) ---
+    Survey.objects.filter(title="Пульс-опрос вовлечённости").delete()
     survey = Survey.objects.create(
-        title="Пульс-опрос Q2", description="Демо-опрос вовлечённости.",
-        mode=Survey.ANONYMOUS, status=Survey.ACTIVE, is_active=True,
-        starts_at=timezone.now() - timedelta(days=45),
-        ends_at=timezone.now() + timedelta(days=10),
+        title="Пульс-опрос вовлечённости", description="Регулярный pulse-мониторинг настроения.",
+        mode=Survey.ANONYMOUS, status=Survey.ACTIVE,
+        starts_at=timezone.now(), ends_at=timezone.now() + timedelta(days=10),
     )
     q_eng = Question.objects.create(survey=survey, order=1, qtype=Question.SCALE,
         text="Оцените вовлечённость", config={"min": 1, "max": 5, "low": "Низкая", "high": "Высокая"})
@@ -79,15 +93,23 @@ def run():
     q_text = Question.objects.create(survey=survey, order=4, qtype=Question.TEXT,
         text="Что бы вы изменили?", required=False)
 
-    # --- backdated анонимные ответы (для тренда/eNPS/распределения) ---
+    # --- волны (запуски) с backdated ответами ---
     now = timezone.now()
-    for wave in range(WAVES):
-        wave_dt = now - timedelta(days=WAVE_GAP_DAYS * (WAVES - wave))
+    for ri in range(RUNS):
+        run_dt = now - timedelta(days=RUN_GAP_DAYS * (RUNS - 1 - ri))
+        is_last = ri == RUNS - 1
+        run_obj = SurveyRun.objects.create(
+            survey=survey, index=ri + 1,
+            status=SurveyRun.ACTIVE if is_last else SurveyRun.COMPLETED,
+            starts_at=run_dt, ends_at=run_dt + timedelta(days=10 if is_last else 7),
+        )
         for dept in DEPTS:
-            eng_mean = ENG[dept][wave]
-            for _ in range(RESP_PER_WAVE):
-                r = Response.objects.create(survey=survey, department=dept, session_id="seed")
-                Response.objects.filter(pk=r.pk).update(submitted_at=wave_dt)
+            eng_mean = ENG[dept][ri]
+            for _ in range(RESP_PER_RUN):
+                r = Response.objects.create(
+                    run=run_obj, survey=survey, department=dept, session_id="seed",
+                    city=random.choice(CITIES), job_title=random.choice(TITLES[dept]))
+                Response.objects.filter(pk=r.pk).update(submitted_at=run_dt)
                 eng = max(1, min(5, round(random.gauss(eng_mean, 0.5))))
                 nps = max(0, min(10, round(random.gauss(eng_mean * 2, 1.5))))
                 Answer.objects.create(response=r, question=q_eng, value_num=eng)
@@ -97,14 +119,14 @@ def run():
                                       value_json=random.choices(CHOICES, weights=weights)[0])
                 Answer.objects.create(response=r, question=q_text,
                                       value_text=random.choice(NEG if eng <= 3 else POS))
+        # участия per-run (~70%); в активной волне часть не прошли — чтобы можно было пройти на демо
+        for dept in DEPTS:
+            for emp in employees[dept]:
+                if random.random() < 0.7:
+                    Participation.objects.get_or_create(run=run_obj, survey=survey, employee=emp)
 
-    # --- участия (для % прохождения): ~70% сотрудников ---
-    for dept in DEPTS:
-        for emp in employees[dept]:
-            if random.random() < 0.7:
-                Participation.objects.get_or_create(survey=survey, employee=emp)
-
-    print(f"Seed готов: survey #{survey.id}, {WAVES} волн × {len(DEPTS)} отделов, "
+    survey.sync_status()
+    print(f"Seed готов: survey #{survey.id} «{survey.title}», {RUNS} волн × {len(DEPTS)} отделов, "
           f"{Employee.objects.count()} аккаунтов.")
 
 

@@ -35,9 +35,10 @@ def analyze(request):
     """
     survey = get_object_or_404(Survey, pk=request.data.get("survey_id"))
     department = request.data.get("department") or ""
+    run = survey.active_run or survey.latest_run
 
     texts_qs = Answer.objects.filter(
-        response__survey=survey, value_text__isnull=False,
+        response__run=run, value_text__isnull=False,
     ).exclude(value_text="")
     if department:
         texts_qs = texts_qs.filter(response__department=department)
@@ -46,6 +47,7 @@ def analyze(request):
     result = analyze_texts(texts)
     insight = Insight.objects.create(
         survey=survey,
+        run=run,
         department=department,
         summary=result["summary"],
         severity=result["severity"],
@@ -103,15 +105,17 @@ def alerts_stream(request):
 
 # ── ИИ-отчёт по опросу ──────────────────────────────────────────────────────
 
-def build_report_context(survey):
-    """Собрать компактный контекст для LLM из готовой аналитики (анонимность — гейт N>=5)."""
+def build_report_context(run):
+    """Собрать компактный контекст для LLM из аналитики ВОЛНЫ (анонимность — гейт N>=5)."""
+    survey = run.survey
     questions = list(survey.questions.all().order_by("order"))
     return {
         "survey": {
             "title": survey.title,
             "description": survey.description,
             "mode": survey.mode,
-            "status": survey.status,
+            "status": run.status,
+            "wave": run.index,
         },
         "questions": [
             {"text": q.text, "type": q.qtype, "nps": bool(q.config.get("nps"))}
@@ -120,11 +124,11 @@ def build_report_context(survey):
         "has_nps_question": any(
             q.qtype == Question.SCALE and q.config.get("nps") for q in questions
         ),
-        "overall": analytics.overall_stats(survey),
-        "departments": analytics.department_breakdown(survey),
-        "trend": analytics.trend_series(survey),
-        "distribution": analytics.distribution(survey),
-        "comments": analytics.comments(survey, limit=30),
+        "overall": analytics.overall_stats(run),
+        "departments": analytics.department_breakdown(run),
+        "trend": analytics.trend_series(run),
+        "distribution": analytics.distribution(run),
+        "comments": analytics.comments(run, limit=30),
     }
 
 
@@ -169,12 +173,13 @@ def generate_survey_report(request, survey_id):
     """Сгенерировать новую версию ИИ-отчёта (история прошлых версий сохраняется)."""
     survey = get_object_or_404(Survey, pk=survey_id, deleted_at__isnull=True)
     min_n = ai_report_min_responses()
-    if survey.responses.count() < min_n:
+    run = survey.active_run or survey.latest_run
+    if run is None or run.responses.count() < min_n:
         return ApiResponse({"detail": f"Для ИИ-отчёта нужно ≥ {min_n} ответов"}, status=400)
 
-    ctx = build_report_context(survey)
+    ctx = build_report_context(run)
     content, model_used = generate_report(ctx)
     report = SurveyReport.objects.create(
-        survey=survey, content=content, kpis=ctx["overall"], model_used=model_used,
+        survey=survey, run=run, content=content, kpis=ctx["overall"], model_used=model_used,
     )
     return ApiResponse({"report": _report_payload(report)}, status=201)

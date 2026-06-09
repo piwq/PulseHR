@@ -1,10 +1,11 @@
 from django.db import models
 
-from apps.surveys.models import Survey
+from apps.surveys.models import Survey, SurveyRun
 
 
 class Insight(models.Model):
     survey = models.ForeignKey(Survey, related_name="insights", on_delete=models.CASCADE)
+    run = models.ForeignKey(SurveyRun, related_name="insights", on_delete=models.CASCADE, null=True)
     department = models.CharField(max_length=120, blank=True)
     summary = models.TextField()
     # 1 — инфо, 2 — внимание, 3 — критично. [уточнить по ТЗ: severity-правила]
@@ -23,6 +24,7 @@ class SurveyReport(models.Model):
     """ИИ-отчёт по опросу. Каждая генерация — новая версия (история сохраняется)."""
 
     survey = models.ForeignKey(Survey, related_name="ai_reports", on_delete=models.CASCADE)
+    run = models.ForeignKey(SurveyRun, related_name="ai_reports", on_delete=models.CASCADE, null=True)
     # {overall: str, problem_zones: [str], survey_quality: str, recommendations: [str]}
     content = models.JSONField()
     # Снимок метрик на момент генерации — для сравнения версий.

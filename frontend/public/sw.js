@@ -5,8 +5,10 @@ self.addEventListener('push', (event) => {
   const title = data.title || 'PulseHR'
   event.waitUntil(self.registration.showNotification(title, {
     body: data.body || '',
+    icon: '/favicon.svg',
     data: { url: data.url || '/', survey_id: data.survey_id },
     tag: data.survey_id ? 'survey-' + data.survey_id : undefined, // дедупликация
+    actions: [{ action: 'open', title: 'Пройти опрос' }],
   }))
 })
 

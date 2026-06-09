@@ -178,6 +178,7 @@ function logout() { auth.logout(); router.push('/login') }
               </div>
               <p class="xs muted" style="margin-top:2px">
                 {{ s.question_count }} вопросов
+                <template v-if="s.wave"> · волна {{ s.wave }}</template>
                 <template v-if="s.completed_at"> · {{ new Date(s.completed_at).toLocaleDateString('ru', { day: 'numeric', month: 'long' }) }}</template>
               </p>
             </div>

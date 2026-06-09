@@ -35,7 +35,18 @@ onMounted(async () => {
   loading.value = false
   // если уже пройден — пропустить intro
   if (already.value) intro.value = false
+  // переход по ссылке уведомления (?ch=push|telegram|sms|email) → метрика канала
+  trackNotif('opened')
 })
+
+// Атрибуция доставки по каналам (ТЗ «Метрики доставки»): ссылка несёт ?ch=<канал>.
+function trackNotif(event) {
+  const channel = route.query.ch
+  if (!channel) return
+  api('/notifications/track', {
+    method: 'POST', body: { survey_id: Number(route.params.id), channel, event },
+  }).catch(() => { /* метрика не критична */ })
+}
 
 function startSurvey() { intro.value = false }
 
@@ -108,6 +119,7 @@ async function finish() {
   error.value = ''
   try {
     await api(`/surveys/${route.params.id}/submit/`, { method: 'POST', body: { answers: buildPayload() } })
+    trackNotif('clicked')  // целевое действие выполнено через канал
     done.value = true
   } catch (e) {
     if (e.status === 409) { already.value = true } else { error.value = 'Не удалось отправить ответы' }

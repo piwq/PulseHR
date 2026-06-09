@@ -7,12 +7,14 @@ import PhSkeleton from '../components/ui/PhSkeleton.vue'
 import PhIcon from '../components/ui/PhIcon.vue'
 import PhEmptyState from '../components/ui/PhEmptyState.vue'
 import PhTrendChart from '../components/charts/PhTrendChart.vue'
+import PhMultiSelect from '../components/ui/PhMultiSelect.vue'
 import { api } from '../lib/api'
 import { sevLabel } from '../lib/severity'
 
 const data = ref(null)
 const loading = ref(true)
 const surveyId = ref(null)
+const runId = ref(null)   // выбранная волна (null = активная/последняя с данными)
 
 // ── Survey picker ──────────────────────────────────────────────────
 const surveyMenuOpen = ref(false)
@@ -46,7 +48,21 @@ async function selectSurvey(id) {
   closePicker()
   if (String(id) === surveyId.value) return
   surveyId.value = String(id)
+  runId.value = null   // новая серия → дефолтная волна
   await load()
+}
+
+// ── Волны (запуски) ────────────────────────────────────────────────
+const runs = computed(() => data.value?.runs || [])
+const currentRun = computed(() => data.value?.run || null)
+const waveDelta = computed(() => data.value?.delta || null)
+async function selectRun(e) {
+  runId.value = e.target.value || null
+  await load()
+}
+function runOptLabel(r) {
+  const st = { active: 'активна', completed: 'завершена', archive: 'архив', draft: 'черновик' }[r.status] || r.status
+  return `${r.label} · ${st} · ${r.responses} отв.`
 }
 
 // ── Data filters (affect chart + table) ────────────────────────────
@@ -54,10 +70,23 @@ const filterDepts = ref([])
 const filterSev   = ref('')
 const deptMenuOpen = ref(false)
 
+// Серверные сегментные фильтры (город/должность) — пересегментируют анонимные ответы.
+// Мультивыбор (как у отделов): пустой массив = «все».
+const filterCity = ref([])
+const filterJob  = ref([])
+const cityOptions = computed(() => data.value?.filter_options?.cities || [])
+const jobOptions  = computed(() => data.value?.filter_options?.job_titles || [])
+async function applyServerFilter() { await load() }
+function setCity(v) { filterCity.value = v; applyServerFilter() }
+function setJob(v)  { filterJob.value = v;  applyServerFilter() }
+
 const SEV_OPTS = [['', 'Все'], ['critical', 'Критично'], ['medium', 'Внимание'], ['low', 'Норма']]
 
-const anyFilter = computed(() => filterDepts.value.length || filterSev.value)
-function resetFilters() { filterDepts.value = []; filterSev.value = '' }
+const anyFilter = computed(() => filterDepts.value.length || filterSev.value || filterCity.value.length || filterJob.value.length)
+function resetFilters() {
+  filterDepts.value = []; filterSev.value = ''
+  if (filterCity.value.length || filterJob.value.length) { filterCity.value = []; filterJob.value = []; load() }
+}
 
 // empty filterDepts = "all shown" (no filter active)
 const isDeptChecked = (d) => filterDepts.value.length === 0 || filterDepts.value.includes(d)
@@ -87,10 +116,16 @@ function toggleAllDepts() {
 async function load() {
   loading.value = true
   try {
-    const url = surveyId.value ? `/surveys/dashboard/?id=${surveyId.value}` : '/surveys/dashboard/'
-    const response = await api(url)
+    const p = new URLSearchParams()
+    if (surveyId.value) p.set('id', surveyId.value)
+    if (runId.value) p.set('run_id', runId.value)
+    filterCity.value.forEach(c => p.append('city', c))
+    filterJob.value.forEach(j => p.append('job_title', j))
+    const qs = p.toString()
+    const response = await api('/surveys/dashboard/' + (qs ? `?${qs}` : ''))
     // Set surveyId BEFORE data.value so the watch on filteredSurveys sees the correct id
     if (!surveyId.value && response?.survey) surveyId.value = String(response.survey.id)
+    if (response?.run) runId.value = String(response.run.id)  // отразить выбранную волну в селекте
     data.value = response
   } finally {
     loading.value = false
@@ -227,8 +262,12 @@ function distMax(q) {
         </div>
       </div>
 
-      <!-- Строка данных: отдел + сигнал (влияют на график и таблицу) -->
+      <!-- Строка данных: волна + отдел + сигнал (влияют на график и таблицу) -->
       <div class="filter-bar">
+        <select v-if="runs.length" class="select select--sm" :value="currentRun?.id" @change="selectRun">
+          <option v-for="r in runs" :key="r.id" :value="r.id">{{ runOptLabel(r) }}</option>
+        </select>
+        <div v-if="runs.length" class="filter-bar__sep" />
         <div style="position:relative" @click.stop>
           <button class="dept-btn" :class="filterDepts.length && 'dept-btn--active'"
             @click="deptMenuOpen = !deptMenuOpen">
@@ -253,6 +292,13 @@ function distMax(q) {
             class="seg__btn" :class="filterSev === v && 'seg__btn--on'"
             @click="filterSev = v">{{ l }}</button>
         </div>
+        <template v-if="cityOptions.length">
+          <div class="filter-bar__sep" />
+          <PhMultiSelect :model-value="filterCity" :options="cityOptions" all-label="Все города"
+            @update:model-value="setCity" />
+        </template>
+        <PhMultiSelect v-if="jobOptions.length" :model-value="filterJob" :options="jobOptions"
+          all-label="Все должности" @update:model-value="setJob" />
         <button v-if="anyFilter" class="filter-reset" @click="resetFilters">× сбросить</button>
       </div>
     </div>
@@ -272,16 +318,20 @@ function distMax(q) {
         label="Индекс вовлечённости" scale-hint="/ 5"
         hint="Средний балл по всем шкальным вопросам опроса (1–5). Ниже 3.5 — сигнал тревоги, ниже 3.0 — критично."
         :to="data.kpis.engagement ?? 0" :dec="1"
-        :delta-dir="(data.kpis.engagement_delta ?? 0) >= 0 ? 'up' : 'down'"
-        :delta-text="data.kpis.engagement_delta != null ? `${data.kpis.engagement_delta > 0 ? '+' : ''}${data.kpis.engagement_delta} за период` : undefined" />
+        :delta-dir="(waveDelta?.engagement ?? 0) >= 0 ? 'up' : 'down'"
+        :delta-text="waveDelta?.engagement != null ? `${waveDelta.engagement > 0 ? '+' : ''}${waveDelta.engagement} к ${waveDelta.prev_label}` : undefined" />
       <PhMetricCard
         label="eNPS" scale-hint="−100…100"
         hint="Employee Net Promoter Score: % промоутеров (9–10 баллов) минус % критиков (0–6 баллов). Выше 0 — хорошо, выше +30 — отлично."
-        :to="data.kpis.enps ?? 0" plus />
+        :to="data.kpis.enps ?? 0" plus
+        :delta-dir="(waveDelta?.enps ?? 0) >= 0 ? 'up' : 'down'"
+        :delta-text="waveDelta?.enps != null ? `${waveDelta.enps > 0 ? '+' : ''}${waveDelta.enps} к ${waveDelta.prev_label}` : undefined" />
       <PhMetricCard
         label="Участие в опросе" unit="%"
         hint="Доля сотрудников из целевой аудитории, завершивших опрос. Ниже 60% — низкая репрезентативность данных."
-        :to="data.kpis.participation ?? 0" />
+        :to="data.kpis.participation ?? 0"
+        :delta-dir="(waveDelta?.participation ?? 0) >= 0 ? 'up' : 'down'"
+        :delta-text="waveDelta?.participation != null ? `${waveDelta.participation > 0 ? '+' : ''}${waveDelta.participation}% к ${waveDelta.prev_label}` : undefined" />
     </div>
 
     <!-- Тренд вовлечённости -->
@@ -431,6 +481,10 @@ function distMax(q) {
 }
 .filter-bar__sep {
   width: 1px; height: 18px; background: var(--line); flex: none;
+}
+.select--sm {
+  height: 30px; padding: 0 26px 0 10px; font-size: 12px;
+  border-radius: 8px; min-width: 120px;
 }
 
 /* Segmented control */

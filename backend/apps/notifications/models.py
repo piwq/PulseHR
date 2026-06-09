@@ -1,7 +1,7 @@
 from django.db import models
 
 from apps.accounts.models import Employee
-from apps.surveys.models import Survey
+from apps.surveys.models import Survey, SurveyRun
 
 
 class PushSubscription(models.Model):
@@ -55,6 +55,7 @@ class NotificationJob(models.Model):
     ACTIVE, COMPLETED, STOPPED = "active", "completed", "stopped"
     STATUS_CHOICES = [(ACTIVE, "active"), (COMPLETED, "completed"), (STOPPED, "stopped")]
 
+    run = models.ForeignKey(SurveyRun, related_name="notif_jobs", on_delete=models.CASCADE)
     survey = models.ForeignKey(Survey, related_name="notif_jobs", on_delete=models.CASCADE)
     employee = models.ForeignKey(Employee, related_name="notif_jobs", on_delete=models.CASCADE)
     trigger = models.CharField(max_length=32)  # publish | reminder48 | reminder24 | pulse | added
@@ -79,6 +80,7 @@ class NotificationLog(models.Model):
                       (CLICKED, CLICKED), (FAILED, FAILED), (SKIPPED, SKIPPED)]
 
     employee = models.ForeignKey(Employee, related_name="notif_logs", on_delete=models.CASCADE)
+    run = models.ForeignKey(SurveyRun, related_name="notif_logs", on_delete=models.CASCADE, null=True)
     survey = models.ForeignKey(Survey, related_name="notif_logs", on_delete=models.CASCADE)
     channel = models.CharField(max_length=10)  # push | telegram | sms | email
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=SENT)

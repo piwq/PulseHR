@@ -120,10 +120,12 @@ def send_alert(request):
 
     survey = get_object_or_404(Survey, pk=request.data.get("survey_id"))
     department = (request.data.get("department") or "").strip()
+    run = survey.active_run
+    if run is None:
+        return ApiResponse({"detail": "У опроса нет активной волны"}, status=409)
 
-    taken = set(Participation.objects.filter(survey=survey).values_list("employee_id", flat=True))
+    taken = set(Participation.objects.filter(run=run).values_list("employee_id", flat=True))
     now = timezone.now()
-    today = now.strftime("%Y%m%d")
 
     qs = Employee.objects.filter(role=Employee.EMPLOYEE)
     if department:
@@ -135,15 +137,15 @@ def send_alert(request):
             continue
         if not emp.consent_active:
             continue
-        # Не создаём если уже есть активное задание — но если предыдущее завершено, шлём снова
+        # Не создаём если уже есть активное задание по этой волне — иначе шлём снова
         active_exists = NotificationJob.objects.filter(
-            survey=survey, employee=emp, trigger="manual", status=NotificationJob.ACTIVE,
+            run=run, employee=emp, trigger="manual", status=NotificationJob.ACTIVE,
         ).exists()
         if active_exists:
             continue
-        dedup = f"{survey.id}:{emp.id}:manual:{now.strftime('%Y%m%d%H%M%S')}"
+        dedup = f"{run.id}:{emp.id}:manual:{now.strftime('%Y%m%d%H%M%S')}"
         NotificationJob.objects.create(
-            survey=survey, employee=emp, trigger="manual",
+            run=run, survey=survey, employee=emp, trigger="manual",
             stage=NotificationJob.PUSH, next_attempt_at=now,
             dedup_key=dedup,
         )
@@ -156,12 +158,41 @@ def send_alert(request):
     }, status=201 if queued else 200)
 
 
+def _avg_to_action_min(survey, channel):
+    """Среднее время (мин) от первого уведомления по каналу до прохождения опроса.
+
+    ТЗ «Метрики доставки»: скорость отклика по каналам. Берём по каждому прошедшему
+    сотруднику первый SENT/OPENED/CLICKED лог канала и считаем дельту до completed_at.
+    """
+    from apps.surveys.models import Participation
+
+    parts = dict(Participation.objects.filter(survey=survey)
+                 .values_list("employee_id", "completed_at"))
+    if not parts:
+        return None
+    first_log = {}
+    for emp_id, created in (NotificationLog.objects
+                            .filter(survey=survey, channel=channel,
+                                    status__in=[NotificationLog.SENT, NotificationLog.OPENED,
+                                                NotificationLog.CLICKED])
+                            .order_by("created_at")
+                            .values_list("employee_id", "created_at")):
+        first_log.setdefault(emp_id, created)
+    deltas = []
+    for emp_id, done_at in parts.items():
+        sent_at = first_log.get(emp_id)
+        if sent_at and done_at and done_at >= sent_at:
+            deltas.append((done_at - sent_at).total_seconds() / 60)
+    return round(sum(deltas) / len(deltas)) if deltas else None
+
+
 @api_view(["GET"])
 @permission_classes([IsHR])
 def delivery(request, survey_id):
-    """Метрики каналов по опросу: отправлено/открыто/CTR/стоимость SMS."""
+    """Метрики каналов по опросу: отправлено/открыто/CTR/стоимость/скорость отклика."""
     survey = get_object_or_404(Survey, pk=survey_id)
     out = []
+    total_cost = 0.0
     for ch in ["push", "telegram", "sms", "email"]:
         qs = NotificationLog.objects.filter(survey=survey, channel=ch)
         agg = qs.aggregate(
@@ -171,10 +202,13 @@ def delivery(request, survey_id):
             cost=Sum("cost"),
         )
         sent = agg["sent"] or 0
+        cost = float(agg["cost"] or 0)
+        total_cost += cost
         out.append({
             "channel": ch, "sent": sent, "opened": agg["opened"] or 0,
             "clicked": agg["clicked"] or 0,
             "ctr": round((agg["clicked"] or 0) / sent * 100) if sent else 0,
-            "cost": float(agg["cost"] or 0),
+            "cost": cost,
+            "avg_to_action_min": _avg_to_action_min(survey, ch),
         })
-    return ApiResponse({"survey_id": survey.id, "channels": out})
+    return ApiResponse({"survey_id": survey.id, "channels": out, "total_cost": round(total_cost, 2)})

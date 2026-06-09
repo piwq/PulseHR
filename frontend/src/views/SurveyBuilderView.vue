@@ -23,11 +23,20 @@ const survey = ref({
 })
 const saving = ref(false)
 const msg = ref('')
+const runCount = ref(0)   // сколько волн уже было — после запуска вопросы менять нельзя
 
 const allDepts = ref([])
 const audienceDepts = ref([])
+const audienceRoles = ref([])  // пусто = все роли (вся компания)
+const ROLE_OPTS = [['employee', 'Сотрудники'], ['hr', 'HR / Руководители']]
 const audienceSearch = ref('')
 const audienceOpen = ref(false)
+
+function toggleRole(r) {
+  const i = audienceRoles.value.indexOf(r)
+  if (i >= 0) audienceRoles.value.splice(i, 1)
+  else audienceRoles.value.push(r)
+}
 
 const filteredDepts = computed(() =>
   allDepts.value.filter(d =>
@@ -57,7 +66,9 @@ onMounted(async () => {
   allDepts.value = await api('/auth/departments').catch(() => [])
   if (!editing) { addQuestion(); return }
   const s = await api(`/surveys/${route.params.id}/`)
+  runCount.value = s.run_count || 0
   audienceDepts.value = s.audience_departments || []
+  audienceRoles.value = s.audience_roles || []
   survey.value = {
     title: s.title, description: s.description, mode: s.mode, critical: s.critical,
     starts_at: s.starts_at?.slice(0, 16) || '', ends_at: s.ends_at?.slice(0, 16) || '',
@@ -101,6 +112,7 @@ function toApi() {
     mode: survey.value.mode,
     critical: survey.value.critical,
     audience_departments: audienceDepts.value,
+    audience_roles: audienceRoles.value,
     starts_at: survey.value.starts_at || null,
     ends_at: survey.value.ends_at || null,
     questions: survey.value.questions.map((q, i) => {
@@ -144,6 +156,11 @@ async function save(thenPublish = false) {
         <PhIcon name="arrow" :size="14" style="transform:rotate(180deg)" />Все опросы
       </button>
     </div>
+    <div v-if="runCount > 0" class="lock-note">
+      <PhIcon name="alert" :size="15" style="flex:none;margin-top:1px" />
+      <span>Опрос уже запускался ({{ runCount }} {{ runCount === 1 ? 'волна' : 'волн' }}).
+        Изменение вопросов исказит сравнение с прошлыми волнами — меняйте их только осознанно.</span>
+    </div>
     <PhCard>
       <div class="h3" style="margin-bottom:16px">Настройки опроса</div>
       <div style="display:flex;flex-direction:column;gap:14px">
@@ -180,6 +197,16 @@ async function save(thenPublish = false) {
             </div>
           </PhField>
         </div>
+        <PhField label="Роли в аудитории">
+          <div style="display:flex;gap:18px;flex-wrap:wrap">
+            <label v-for="[v, l] in ROLE_OPTS" :key="v"
+              style="display:flex;align-items:center;gap:7px;font-size:13px;color:var(--text-secondary);cursor:pointer">
+              <input type="checkbox" :checked="audienceRoles.includes(v)" @change="toggleRole(v)"
+                style="accent-color:var(--accent);width:15px;height:15px" />{{ l }}
+            </label>
+            <span class="xs muted" style="align-self:center">пусто = все роли</span>
+          </div>
+        </PhField>
         <div style="display:flex;gap:14px;flex-wrap:wrap">
           <PhField label="Старт" style="flex:1"><input type="datetime-local" class="input" v-model="survey.starts_at" /></PhField>
           <PhField label="Окончание" style="flex:1"><input type="datetime-local" class="input" v-model="survey.ends_at" /></PhField>
@@ -270,3 +297,13 @@ async function save(thenPublish = false) {
     </div>
   </div>
 </template>
+
+<style scoped>
+.lock-note {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 11px 14px; border-radius: 10px; font-size: 13px; line-height: 1.45;
+  color: var(--sev-warn-text, #fbbf24);
+  background: color-mix(in srgb, var(--sev-warn-text, #fbbf24) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sev-warn-text, #fbbf24) 30%, transparent);
+}
+</style>

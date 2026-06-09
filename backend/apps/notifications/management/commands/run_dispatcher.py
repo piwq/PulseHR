@@ -9,6 +9,7 @@ import time
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from apps.insights.watcher import run_watcher
 from apps.notifications import services
 
 log = logging.getLogger("notifications")
@@ -25,6 +26,7 @@ class Command(BaseCommand):
                 now = timezone.now()
                 services.run_scheduler(now)
                 services.dispatch_due(now)
+                run_watcher(now)  # авто-петля инсайтов (INSIGHTS_AUTO=1)
             except Exception as e:  # noqa: BLE001
                 log.warning("dispatcher loop error: %s", e)
             time.sleep(POLL_SECONDS)

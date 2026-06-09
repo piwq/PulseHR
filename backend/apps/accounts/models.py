@@ -14,6 +14,7 @@ class Employee(models.Model):
     phone = models.CharField(max_length=32, unique=True)
     name = models.CharField(max_length=120, blank=True)
     department = models.CharField(max_length=120, blank=True)
+    job_title = models.CharField(max_length=120, blank=True)
     city = models.CharField(max_length=120, blank=True)
     role = models.CharField(max_length=12, choices=ROLE_CHOICES, default=EMPLOYEE)
 

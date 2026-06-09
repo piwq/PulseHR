@@ -11,7 +11,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from apps.accounts.models import Employee
-from apps.surveys.models import Participation, Survey
+from apps.surveys.models import Participation, Survey, SurveyRun
 
 from .channels import email as email_ch
 from .channels import sms as sms_ch
@@ -48,9 +48,10 @@ def _delay_for(stage):
     return timedelta(seconds=demo) if demo is not None else STAGE_DELAY[stage]
 
 
-def _payload(survey):
+def _payload(run):
+    survey = run.survey
     minutes = max(1, survey.questions.count())
-    ends = survey.ends_at.strftime("%d.%m") if survey.ends_at else "—"
+    ends = run.ends_at.strftime("%d.%m") if run.ends_at else "—"
     return {
         "title": f"Новый опрос: {survey.title}",
         "body": f"До окончания — {ends}. Время прохождения — ~{minutes} мин.",
@@ -60,8 +61,15 @@ def _payload(survey):
     }
 
 
+def _tag_url(url, channel):
+    """Пометить ссылку каналом (?ch=) — страница прохождения фиксирует переход/CTR по каналу."""
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}ch={channel}"
+
+
 def _audience(survey):
-    qs = Employee.objects.filter(role=Employee.EMPLOYEE)
+    roles = survey.audience_roles or [Employee.EMPLOYEE]
+    qs = Employee.objects.filter(role__in=roles)
     if survey.audience_departments:
         qs = qs.filter(department__in=survey.audience_departments)
     return qs
@@ -69,9 +77,10 @@ def _audience(survey):
 
 # ---------------------------------------------------------------- enqueue (триггеры)
 
-def enqueue_for_trigger(survey, trigger):
-    """Поставить каскадные задания аудитории (исключая прошедших и без согласия)."""
-    taken = set(Participation.objects.filter(survey=survey).values_list("employee_id", flat=True))
+def enqueue_for_trigger(run, trigger):
+    """Поставить каскадные задания аудитории волны (исключая прошедших ЭТУ волну и без согласия)."""
+    survey = run.survey
+    taken = set(Participation.objects.filter(run=run).values_list("employee_id", flat=True))
     now = timezone.now()
     created = 0
     for emp in _audience(survey):
@@ -80,13 +89,13 @@ def enqueue_for_trigger(survey, trigger):
         if not survey.critical and not emp.consent_active:
             continue  # 152-ФЗ: без согласия не шлём (кроме критичных)
         _, was_created = NotificationJob.objects.get_or_create(
-            dedup_key=f"{survey.id}:{emp.id}:{trigger}",
-            defaults={"survey": survey, "employee": emp, "trigger": trigger,
+            dedup_key=f"{run.id}:{emp.id}:{trigger}",
+            defaults={"run": run, "survey": survey, "employee": emp, "trigger": trigger,
                       "stage": NotificationJob.PUSH, "next_attempt_at": now,
                       "critical": survey.critical},
         )
         created += was_created
-    log.info("enqueue %s/%s: +%d заданий", survey.id, trigger, created)
+    log.info("enqueue run %s/%s: +%d заданий", run.id, trigger, created)
     return created
 
 
@@ -96,15 +105,15 @@ _last_purge = None
 
 
 def run_scheduler(now=None):
-    """Напоминания 48ч/24ч + авто-чистка мягко-удалённых опросов старше 30 дней."""
+    """Напоминания 48ч/24ч по активным волнам + авто-чистка мягко-удалённых опросов >30 дней."""
     now = now or timezone.now()
-    for survey in Survey.objects.filter(status=Survey.ACTIVE, ends_at__isnull=False,
-                                        deleted_at__isnull=True):
-        hours_left = (survey.ends_at - now).total_seconds() / 3600
+    for run in SurveyRun.objects.filter(status=SurveyRun.ACTIVE, ends_at__isnull=False,
+                                        survey__deleted_at__isnull=True).select_related("survey"):
+        hours_left = (run.ends_at - now).total_seconds() / 3600
         if 24 < hours_left <= 48:
-            enqueue_for_trigger(survey, "reminder48")
+            enqueue_for_trigger(run, "reminder48")
         elif 0 < hours_left <= 24:
-            enqueue_for_trigger(survey, "reminder24")
+            enqueue_for_trigger(run, "reminder24")
 
     global _last_purge
     if _last_purge is None or (now - _last_purge).total_seconds() > 3600:
@@ -128,20 +137,53 @@ def _within_sms_hours(now):
     return 9 <= timezone.localtime(now).hour < 18
 
 
-def _already_sent(survey, employee, channel):
+def _sms_sent_today(employee, now):
+    """SMS-антиспам ТЗ: не более 3 SMS в сутки на сотрудника (по всем опросам)."""
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return NotificationLog.objects.filter(
+        employee=employee, channel="sms", created_at__gte=start,
+        status=NotificationLog.SENT,
+    ).count()
+
+
+# Окна предпочтительного времени уведомлений (час начала, час конца).
+PREFERRED_WINDOWS = {
+    ChannelPrefs.MORNING: (9, 12),
+    ChannelPrefs.DAY: (12, 17),
+    ChannelPrefs.EVENING: (17, 21),
+}
+
+
+def _next_preferred_attempt(prefs, now):
+    """Если текущее время вне предпочтительного окна — вернуть начало ближайшего окна, иначе None."""
+    window = PREFERRED_WINDOWS.get(prefs.preferred_time)
+    if window is None:  # ANY / не задано — слать сразу
+        return None
+    local = timezone.localtime(now)
+    start, end = window
+    if start <= local.hour < end:
+        return None
+    target = local.replace(hour=start, minute=0, second=0, microsecond=0)
+    if local.hour >= end:  # окно сегодня прошло → завтра
+        target += timedelta(days=1)
+    return target
+
+
+def _already_sent(run, employee, channel):
     # Dedup только для платных каналов (SMS/email) — push и tg можно слать повторно
     if channel not in ("sms", "email"):
         return False
     return NotificationLog.objects.filter(
-        survey=survey, employee=employee, channel=channel, status=NotificationLog.SENT,
+        run=run, employee=employee, channel=channel, status=NotificationLog.SENT,
     ).exists()
 
 
 def process_job(job, now):
     emp = job.employee
     survey = job.survey
+    run = job.run
 
-    if Participation.objects.filter(survey=survey, employee=emp).exists():
+    if Participation.objects.filter(run=run, employee=emp).exists():
         job.status = NotificationJob.COMPLETED
         job.save(update_fields=["status"])
         return
@@ -159,8 +201,15 @@ def process_job(job, now):
         job.next_attempt_at = now + timedelta(hours=1)
         job.save(update_fields=["next_attempt_at"])
         return
+    # Предпочтительное время (утром/днём/вечером): вне окна — отложить (кроме критичных/демо).
+    if not job.critical and _demo_seconds() is None:
+        preferred = _next_preferred_attempt(prefs, now)
+        if preferred is not None:
+            job.next_attempt_at = preferred
+            job.save(update_fields=["next_attempt_at"])
+            return
 
-    payload = _payload(survey)
+    payload = _payload(run)
     idx = ORDER.index(job.stage) if job.stage in ORDER else len(ORDER)
     for i in range(idx, len(STAGES)):
         channel, pref_attr, sender = STAGES[i]
@@ -171,15 +220,20 @@ def process_job(job, now):
             job.next_attempt_at = now + timedelta(hours=1)
             job.save(update_fields=["next_attempt_at"])
             return
-        if _already_sent(survey, emp, channel):
-            continue  # дедуп: этот канал по этому опросу уже отработал
+        # Антиспам SMS: не более 3 SMS в сутки на сотрудника → пропускаем SMS-канал.
+        if channel == "sms" and _demo_seconds() is None and _sms_sent_today(emp, now) >= 3:
+            continue
+        if _already_sent(run, emp, channel):
+            continue  # дедуп: этот канал по этой волне уже отработал
 
-        res = sender(emp, payload)
+        # Ссылка с меткой канала → атрибуция перехода/CTR при открытии опроса.
+        ch_payload = {**payload, "url": _tag_url(payload["url"], channel)}
+        res = sender(emp, ch_payload)
         NotificationLog.objects.create(
-            employee=emp, survey=survey, channel=channel,
+            employee=emp, run=run, survey=survey, channel=channel,
             status=NotificationLog.SENT if res.ok else NotificationLog.FAILED,
             cost=res.cost, detail=res.detail,
-            dedup_key=f"{survey.id}:{emp.id}:{channel}",
+            dedup_key=f"{run.id}:{emp.id}:{channel}",
         )
         job.attempt += 1
         if res.ok:

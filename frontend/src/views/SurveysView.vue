@@ -67,6 +67,16 @@ function closeMenu() { openMenu.value = null }
 async function publish(s)  { await api(`/surveys/${s.id}/publish/`,  { method: 'POST' }); closeMenu(); load() }
 async function complete(s) { await api(`/surveys/${s.id}/complete/`,  { method: 'POST' }); closeMenu(); load() }
 async function archive(s)  { await api(`/surveys/${s.id}/archive/`,   { method: 'POST' }); closeMenu(); load() }
+async function relaunch(s) {
+  if (!confirm(`Перезапустить «${s.title}» новой волной?\nИстория прошлых волн сохранится для сравнения.`)) return
+  await api(`/surveys/${s.id}/relaunch/`, { method: 'POST' }); closeMenu(); load()
+}
+function runsLabel(s) {
+  const parts = [`${s.questions.length} вопросов`]
+  if (s.run_count) parts.push(`${s.run_count} ${s.run_count === 1 ? 'волна' : 'волн'}`)
+  parts.push(`${s.response_count} ответов`)
+  return parts.join(' · ')
+}
 async function remove(s) {
   if (!confirm(`Удалить опрос «${s.title}»?\nЕго можно восстановить в течение 30 дней.`)) return
   await api(`/surveys/${s.id}/`, { method: 'DELETE' })
@@ -118,7 +128,7 @@ function exportCsv(s) {
                 <span class="badge" :class="STATUS[s.status][0]"><span class="badge__dot" />{{ STATUS[s.status][1] }}</span>
                 <span class="badge badge--neutral">{{ s.mode === 'anonymous' ? 'анонимный' : 'идентиф.' }}</span>
               </div>
-              <p class="sm muted" style="margin-top:4px">{{ s.questions.length }} вопросов · {{ s.response_count }} ответов</p>
+              <p class="sm muted" style="margin-top:4px">{{ runsLabel(s) }}</p>
             </div>
             <div style="display:flex;align-items:center;gap:8px">
               <PhButton v-if="s.status === 'draft'" variant="primary" @click.stop="publish(s)">Опубликовать</PhButton>
@@ -133,8 +143,8 @@ function exportCsv(s) {
                   <template v-if="s.status !== 'draft'">
                     <div class="dropdown__sep" />
                     <div v-if="s.status === 'active'" class="dropdown__item" @click="complete(s)"><PhIcon name="finish" :size="14" />Завершить досрочно</div>
+                    <div v-if="s.status === 'completed' || s.status === 'archive'" class="dropdown__item" @click="relaunch(s)"><PhIcon name="refresh" :size="14" />Перезапустить (новая волна)</div>
                     <div v-if="s.status !== 'archive'" class="dropdown__item" @click="archive(s)"><PhIcon name="archive" :size="14" />Отправить в архив</div>
-                    <div v-if="s.status === 'archive'" class="dropdown__item" @click="publish(s)"><PhIcon name="refresh" :size="14" />Восстановить</div>
                   </template>
                   <div class="dropdown__sep" />
                   <div class="dropdown__item dropdown__item--danger" @click="remove(s)"><PhIcon name="x" :size="14" />Удалить</div>
@@ -164,7 +174,7 @@ function exportCsv(s) {
                   <span class="badge" :class="STATUS[s.status][0]"><span class="badge__dot" />{{ STATUS[s.status][1] }}</span>
                   <span class="badge badge--neutral">{{ s.mode === 'anonymous' ? 'анонимный' : 'идентиф.' }}</span>
                 </div>
-                <p class="sm muted" style="margin-top:4px">{{ s.questions.length }} вопросов · {{ s.response_count }} ответов</p>
+                <p class="sm muted" style="margin-top:4px">{{ runsLabel(s) }}</p>
               </div>
               <div style="display:flex;align-items:center;gap:8px">
                 <PhButton v-if="s.status === 'draft'" variant="primary" @click.stop="publish(s)">Опубликовать</PhButton>

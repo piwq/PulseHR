@@ -15,9 +15,11 @@ class Survey(models.Model):
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     mode = models.CharField(max_length=12, choices=MODE_CHOICES, default=ANONYMOUS)
+    # Зеркало статуса последней волны (для списка опросов/фронта). Источник истины — SurveyRun.status.
     status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=DRAFT)
     critical = models.BooleanField(default=False)  # обязательный (152-ФЗ/выходное интервью)
 
+    # Плановое окно (дефолт для новой волны). Фактическое окно живёт в SurveyRun.
     starts_at = models.DateTimeField(null=True, blank=True)
     ends_at = models.DateTimeField(null=True, blank=True)
 
@@ -28,8 +30,6 @@ class Survey(models.Model):
     created_by = models.ForeignKey(Employee, null=True, blank=True,
                                    on_delete=models.SET_NULL, related_name="created_surveys")
     created_at = models.DateTimeField(auto_now_add=True)
-    # совместимость со старым фронтом/Фазой 0
-    is_active = models.BooleanField(default=True)
     # мягкое удаление: восстановление в админке в течение 30 дней, потом авто-чистка.
     deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
 
@@ -40,6 +40,20 @@ class Survey(models.Model):
     def is_deleted(self):
         return self.deleted_at is not None
 
+    @property
+    def active_run(self):
+        return self.runs.filter(status=self.ACTIVE).order_by("-index").first()
+
+    @property
+    def latest_run(self):
+        return self.runs.order_by("-index").first()
+
+    def sync_status(self):
+        """Подтянуть зеркало статуса из последней волны (DRAFT, если волн нет)."""
+        latest = self.latest_run
+        self.status = latest.status if latest else self.DRAFT
+        self.save(update_fields=["status"])
+
     def targets(self, employee):
         """Подходит ли сотрудник под аудиторию опроса."""
         if self.audience_roles and employee.role not in self.audience_roles:
@@ -47,6 +61,32 @@ class Survey(models.Model):
         if self.audience_departments and employee.department not in self.audience_departments:
             return False
         return True
+
+
+class SurveyRun(models.Model):
+    """Волна (запуск) опроса. Один Survey → N волн; ответы/участия/уведомления — per-run."""
+
+    DRAFT, ACTIVE, COMPLETED, ARCHIVE = "draft", "active", "completed", "archive"
+    STATUS_CHOICES = Survey.STATUS_CHOICES
+
+    survey = models.ForeignKey(Survey, related_name="runs", on_delete=models.CASCADE)
+    index = models.PositiveIntegerField()           # порядковый номер волны: 1, 2, 3…
+    label = models.CharField(max_length=120, blank=True)  # напр. «Q2 2026» (опционально)
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=ACTIVE)
+    starts_at = models.DateTimeField(null=True, blank=True)
+    ends_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["survey", "index"]
+        unique_together = [("survey", "index")]
+
+    def __str__(self):
+        return f"{self.survey.title} · волна {self.index}"
+
+    @property
+    def title(self):
+        return self.label or f"Волна {self.index}"
 
 
 class Question(models.Model):
@@ -86,11 +126,17 @@ class Response(models.Model):
     Идентифицированный: employee задан, HR видит автора.
     """
 
+    run = models.ForeignKey("SurveyRun", related_name="responses", on_delete=models.CASCADE)
+    # Денормализация опроса на ответ (survey == run.survey) — удобство запросов/совместимость.
     survey = models.ForeignKey(Survey, related_name="responses", on_delete=models.CASCADE)
     employee = models.ForeignKey(Employee, null=True, blank=True,
                                  on_delete=models.SET_NULL, related_name="responses")
     session_id = models.CharField(max_length=64, blank=True)
+    # Денормализация сегментов на сам ответ — чтобы фильтровать анонимные ответы
+    # (Response не связан с Employee) по отделу/городу/должности.
     department = models.CharField(max_length=120, blank=True)
+    city = models.CharField(max_length=120, blank=True)
+    job_title = models.CharField(max_length=120, blank=True)
     completed = models.BooleanField(default=True)
     submitted_at = models.DateTimeField(auto_now_add=True)
 
@@ -110,11 +156,12 @@ class Answer(models.Model):
 
 
 class Participation(models.Model):
-    """Кто прошёл опрос — для напоминаний и анти-повтора. В анонимном режиме НЕ связана с ответами."""
+    """Кто прошёл волну — для напоминаний и анти-повтора. Анти-повтор per-run: новую волну можно пройти снова."""
 
+    run = models.ForeignKey("SurveyRun", related_name="participations", on_delete=models.CASCADE)
     survey = models.ForeignKey(Survey, related_name="participations", on_delete=models.CASCADE)
     employee = models.ForeignKey(Employee, related_name="participations", on_delete=models.CASCADE)
     completed_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = [("survey", "employee")]
+        unique_together = [("run", "employee")]

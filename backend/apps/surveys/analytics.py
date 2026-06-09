@@ -1,13 +1,50 @@
-"""Аналитика опросов: вовлечённость, eNPS, разбивка по отделам, тренд, распределение,
-по дням, комментарии. Гейт анонимности N>=5 защищает от деанонимизации сегментов."""
+"""Аналитика волны опроса (SurveyRun): вовлечённость, eNPS, разбивка по отделам, тренд,
+распределение, по дням, комментарии. Все функции работают на одной ВОЛНЕ (run).
+Гейт анонимности N>=5 защищает от деанонимизации сегментов."""
 from collections import defaultdict
 from statistics import mean
 
 from apps.accounts.models import Employee
 
-from .models import Answer, Participation, Question, Response
+from .models import Answer, Participation, Question
 
 MIN_SEGMENT = 5  # гейт анонимности: агрегат по сегменту только при N>=5
+
+
+def _seg(qs, field, val):
+    """Применить сегментный фильтр: скаляр → точное равенство, список → __in."""
+    if not val:
+        return qs
+    if isinstance(val, (list, tuple, set)):
+        return qs.filter(**{f"{field}__in": list(val)})
+    return qs.filter(**{field: val})
+
+
+def filtered_responses(run, department=None, city=None, job_title=None):
+    """Ответы волны с опциональным фильтром по сегментам (отдел/город/должность)."""
+    qs = run.responses.all()
+    qs = _seg(qs, "department", department)
+    qs = _seg(qs, "city", city)
+    qs = _seg(qs, "job_title", job_title)
+    return qs
+
+
+def filter_values(run):
+    """Списки доступных значений фильтров (для дропдаунов на дашборде)."""
+    rows = run.responses.values_list("department", "city", "job_title")
+    depts, cities, titles = set(), set(), set()
+    for d, c, j in rows:
+        if d:
+            depts.add(d)
+        if c:
+            cities.add(c)
+        if j:
+            titles.add(j)
+    return {
+        "departments": sorted(depts),
+        "cities": sorted(cities),
+        "job_titles": sorted(titles),
+    }
 
 
 def _scale_question_ids(survey, nps=None):
@@ -30,34 +67,36 @@ def enps_from(values):
     return round((promoters - detractors) / n * 100)
 
 
-def severity_for(eng, drop):
+def severity_for(eng, drop=None):
+    """Severity по абсолютному уровню вовлечённости (1–5). Падение во времени —
+    отдельный сигнал (дельта к прошлой волне / сравнение волн), не зашумляет severity."""
     if eng is None:
         return "low"
-    if eng < 3.0 or (drop is not None and drop >= 0.6):
+    if eng < 3.0:
         return "critical"
-    if eng < 3.5 or (drop is not None and drop >= 0.3):
+    if eng < 3.5:
         return "medium"
     return "low"
 
 
-def _note(sev, drop):
+def _note(sev):
     if sev == "critical":
-        return "Падение вовлечённости — требует внимания"
+        return "Критически низкая вовлечённость"
     if sev == "medium":
-        return "Ниже нормы"
+        return "Вовлечённость ниже нормы"
     return "В пределах нормы"
 
 
-def department_breakdown(survey):
+def department_breakdown(run, responses=None, city=None, job_title=None):
     """[{department, n, eng, enps, sev, note}] с гейтом N>=5."""
+    survey = run.survey
     scale_ids = set(_scale_question_ids(survey, nps=False))
     nps_ids = set(_scale_question_ids(survey, nps=True))
-    responses = list(survey.responses.all())
+    responses = list(responses if responses is not None else run.responses.all())
     by_dept = defaultdict(list)
     for r in responses:
         by_dept[r.department or "—"].append(r)
 
-    trend = trend_series(survey)  # для оценки падения
     out = []
     for dept, rs in by_dept.items():
         n = len(rs)
@@ -68,16 +107,12 @@ def department_breakdown(survey):
         eng = engagement(Answer.objects.filter(response_id__in=rid, question_id__in=scale_ids))
         nps_vals = list(Answer.objects.filter(response_id__in=rid, question_id__in=nps_ids)
                         .values_list("value_num", flat=True))
-        series = next((s for s in trend["departments"] if s["department"] == dept), None)
-        drop = None
-        if series and len([v for v in series["values"] if v is not None]) >= 2:
-            vals = [v for v in series["values"] if v is not None]
-            drop = round(vals[0] - vals[-1], 2)
-        sev = severity_for(eng, drop)
+        sev = severity_for(eng)
         out.append({
             "department": dept, "n": n, "suppressed": False,
             "eng": eng, "enps": enps_from([v for v in nps_vals if v is not None]),
-            "part": participation_pct(survey, dept), "sev": sev, "note": _note(sev, drop),
+            "part": participation_pct(run, dept, city=city, job_title=job_title),
+            "sev": sev, "note": _note(sev),
         })
     return sorted(out, key=lambda d: (d.get("eng") is None, d.get("eng") or 0))
 
@@ -86,11 +121,11 @@ def _week_label(dt):
     return dt.strftime("%d.%m")
 
 
-def trend_series(survey):
-    """Тренд вовлечённости по неделям: overall + по отделам. {labels, overall, departments}."""
-    scale_ids = set(_scale_question_ids(survey, nps=False))
-    responses = list(survey.responses.all().order_by("submitted_at"))
-    # бакеты по ISO-неделе
+def trend_series(run, responses=None):
+    """Тренд вовлечённости по неделям ВНУТРИ волны: overall + по отделам."""
+    scale_ids = set(_scale_question_ids(run.survey, nps=False))
+    responses = list(responses if responses is not None else run.responses.all())
+    responses = sorted(responses, key=lambda r: r.submitted_at)
     buckets = {}
     for r in responses:
         key = r.submitted_at.isocalendar()[:2]  # (year, week)
@@ -116,26 +151,38 @@ def trend_series(survey):
     return {"labels": labels, "overall": overall, "departments": dept_series}
 
 
-def participation_pct(survey, department=None):
-    """% прохождения = прошедшие / целевая аудитория (по ролям/отделам). None если базы нет."""
-    target = Employee.objects.filter(role=Employee.EMPLOYEE)
+def audience_employees(survey):
+    """Целевая аудитория опроса (учёт ролей и отделов из настроек опроса)."""
+    roles = survey.audience_roles or [Employee.EMPLOYEE]
+    target = Employee.objects.filter(role__in=roles)
     if survey.audience_departments:
         target = target.filter(department__in=survey.audience_departments)
-    if department:
-        target = target.filter(department=department)
+    return target
+
+
+def participation_pct(run, department=None, city=None, job_title=None):
+    """% прохождения волны = прошедшие / целевая аудитория. None если базы нет."""
+    target = audience_employees(run.survey)
+    target = _seg(target, "department", department)
+    target = _seg(target, "city", city)
+    target = _seg(target, "job_title", job_title)
     total = target.count()
     if not total:
         return None
-    done = Participation.objects.filter(survey=survey, employee__in=target).count()
+    done = Participation.objects.filter(run=run, employee__in=target).count()
     return round(done / total * 100)
 
 
-def distribution(survey):
+def distribution(run, responses=None):
     """Распределение ответов по вариантам для single/multi вопросов."""
+    rids = None if responses is None else [r.id for r in responses]
     out = []
-    for q in survey.questions.filter(qtype__in=[Question.SINGLE, Question.MULTI]):
+    for q in run.survey.questions.filter(qtype__in=[Question.SINGLE, Question.MULTI]):
+        answers = Answer.objects.filter(question=q, response__run=run)
+        if rids is not None:
+            answers = answers.filter(response_id__in=rids)
         counts = defaultdict(int)
-        for a in Answer.objects.filter(question=q):
+        for a in answers:
             picks = a.value_json if isinstance(a.value_json, list) else [a.value_json]
             for p in picks:
                 if p is not None:
@@ -144,31 +191,82 @@ def distribution(survey):
     return out
 
 
-def by_day(survey):
-    """График прохождений по дням."""
+def by_day(run, responses=None):
+    """График прохождений по дням (по submitted_at ответов — совпадает с прохождением)."""
+    responses = responses if responses is not None else run.responses.all()
     counts = defaultdict(int)
-    for p in survey.participations.all():
-        counts[p.completed_at.date().isoformat()] += 1
+    for r in responses:
+        counts[r.submitted_at.date().isoformat()] += 1
     return [{"date": d, "count": counts[d]} for d in sorted(counts)]
 
 
-def comments(survey, limit=50):
+def comments(run, limit=50, responses=None):
     """Текстовые комментарии (без привязки к личности в анонимном режиме)."""
-    qs = (Answer.objects.filter(response__survey=survey, value_text__isnull=False)
-          .exclude(value_text="").order_by("-id")[:limit])
+    qs = Answer.objects.filter(response__run=run, value_text__isnull=False)
+    if responses is not None:
+        qs = qs.filter(response_id__in=[r.id for r in responses])
+    qs = qs.exclude(value_text="").order_by("-id")[:limit]
     return [a.value_text for a in qs]
 
 
-def overall_stats(survey):
+def overall_stats(run, responses=None, department=None, city=None, job_title=None):
+    survey = run.survey
     scale_ids = set(_scale_question_ids(survey, nps=False))
     nps_ids = set(_scale_question_ids(survey, nps=True))
-    rids = list(survey.responses.values_list("id", flat=True))
+    base = responses if responses is not None else run.responses.all()
+    rids = [r.id for r in base]
     eng = engagement(Answer.objects.filter(response_id__in=rids, question_id__in=scale_ids))
     nps_vals = list(Answer.objects.filter(response_id__in=rids, question_id__in=nps_ids)
                     .values_list("value_num", flat=True))
     return {
         "engagement": eng,
         "enps": enps_from([v for v in nps_vals if v is not None]),
-        "participation": participation_pct(survey),
+        "participation": participation_pct(run, department=department, city=city, job_title=job_title),
         "responses": len(rids),
+    }
+
+
+# ── Сравнение волн (ТЗ: история запусков, сравнение во времени) ──────────────
+
+def run_kpis(run):
+    """Краткие KPI волны для сравнения серий: {label, engagement, enps, participation, responses}."""
+    o = overall_stats(run)
+    return {
+        "run_id": run.id, "index": run.index,
+        "label": run.title, "status": run.status,
+        "ended_at": run.ends_at.isoformat() if run.ends_at else None,
+        **o,
+    }
+
+
+def series_comparison(survey):
+    """Сравнение волн опроса: KPI по волнам + матрица вовлечённости по отделам × волнам.
+
+    Возвращает {runs:[run_kpis...], departments:[{department, values:[eng|None по волнам]}]}.
+    Гейт N>=5 на сегмент сохраняется (отдел с n<5 в волне → None).
+    """
+    runs = list(survey.runs.exclude(status="draft").order_by("index"))
+    runs = [r for r in runs if r.responses.exists()]
+    run_cards = [run_kpis(r) for r in runs]
+
+    # отделы по вовлечённости в каждой волне (с гейтом)
+    dept_names = set()
+    per_run_dept = []
+    for r in runs:
+        bd = {d["department"]: d for d in department_breakdown(r)}
+        per_run_dept.append(bd)
+        dept_names.update(bd.keys())
+    departments = []
+    for dept in sorted(dept_names):
+        values = []
+        for bd in per_run_dept:
+            d = bd.get(dept)
+            values.append(None if (d is None or d.get("suppressed")) else d.get("eng"))
+        departments.append({"department": dept, "values": values})
+
+    return {
+        "survey": {"id": survey.id, "title": survey.title},
+        "labels": [c["label"] for c in run_cards],
+        "runs": run_cards,
+        "departments": departments,
     }
